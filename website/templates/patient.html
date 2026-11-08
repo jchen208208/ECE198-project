@@ -18,6 +18,22 @@
   </form>
 </section>
 
+<section id="flags">
+  <h2>Progress flags</h2>
+  {% if flags %}
+  <ul class="flags">
+    {% for f in flags %}
+    <li class="flag-item flag-{{ f.kind }}">
+      <strong>{{ "Increase load" if f.kind == "increase_load" else "New exercise due" }}: {{ f.exercise }}</strong>
+      <span>{{ f.message }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No flags right now. They're worked out from what the patient logs at the station.</p>
+  {% endif %}
+</section>
+
 <section id="plan">
   <h2>Exercise plan (dosage)</h2>
 
@@ -84,8 +100,41 @@
   </datalist>
 </section>
 
+<section id="log">
+  <h2>Exercise log</h2>
+  {% if history %}
+  <p class="hint">
+    {{ session_count }} session{{ "" if session_count == 1 else "s" }} logged at the station{% if session_count > history | length %}, showing the last {{ history | length }}{% endif %}.
+  </p>
+  {% for day, logs in history %}
+  <h3>{{ day.strftime("%a %b %d, %Y") }}</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Exercise</th><th>Set</th><th>Reps</th><th>Load (lb)</th><th>Minutes</th></tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.logged_at.strftime("%H:%M") }}</td>
+          <td>{{ log.dosage.exercise }}{% if not log.dosage.is_active %} <span class="muted">(removed)</span>{% endif %}</td>
+          <td>{{ log.set_number }}</td>
+          <td>{{ log.reps if log.reps is not none else "–" }}</td>
+          <td>{{ num(log.load_lb) or "–" }}</td>
+          <td>{{ log.minutes if log.minutes is not none else "–" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="muted">Nothing logged yet. Sets logged at the station (or the simulator) show up here.</p>
+  {% endif %}
+</section>
+
 <section id="sessions">
-  <h2>Sessions</h2>
+  <h2>Scheduled sessions</h2>
   <form method="post" action="{{ url_for('site.add_session', patient_id=patient.patient_id) }}" class="inline">
     <label>Date <input type="date" name="date" value="{{ today }}" required></label>
     <button>Add session</button>
@@ -109,13 +158,5 @@
   {% else %}
   <p class="muted">No sessions yet.</p>
   {% endif %}
-</section>
-
-<section>
-  <h2>Exercise log &amp; flags</h2>
-  <p class="placeholder">
-    Coming soon: what the patient logged at the station (the <code>exercise_logs</code> table),
-    plus the "increase load" and "new exercises due" flags.
-  </p>
 </section>
 {% endblock %}

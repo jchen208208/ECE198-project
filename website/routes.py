@@ -10,6 +10,8 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from database.extensions import db
 from database.models import Dosage, Patient, Session
 
+from .progress import log_history, patient_flags
+
 # This folder holds its own templates/ and static/ (CSS).
 site = Blueprint("site", __name__, template_folder="templates", static_folder="static", static_url_path="/static")
 
@@ -90,7 +92,8 @@ def _back_to(patient_id, anchor=None):
 @site.get("/")
 def patient_list():
     patients = db.session.execute(db.select(Patient).order_by(Patient.name)).scalars().all()
-    return render_template("patients.html", patients=patients)
+    flags_by_patient = {p.patient_id: patient_flags(p) for p in patients}
+    return render_template("patients.html", patients=patients, flags_by_patient=flags_by_patient)
 
 
 @site.post("/patients")
@@ -112,10 +115,14 @@ def patient_detail(patient_id):
     patient = db.get_or_404(Patient, patient_id)
     dosages = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
     sessions = sorted(patient.sessions, key=lambda s: s.date or date.min, reverse=True)
+    history, session_count = log_history(patient)
     return render_template(
         "patient.html",
         patient=patient,
         dosages=dosages,
+        flags=patient_flags(patient),
+        history=history,
+        session_count=session_count,
         sessions=sessions,
         sample_exercises=SAMPLE_EXERCISES,
         today=date.today().isoformat(),

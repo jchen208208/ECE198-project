@@ -12,7 +12,7 @@
 {% if patients %}
 <table>
   <thead>
-    <tr><th>ID</th><th>Name</th><th>Card</th><th>Exercises</th><th>Sessions</th></tr>
+    <tr><th>ID</th><th>Name</th><th>Card</th><th>Exercises</th><th>Flags</th><th>Scheduled</th></tr>
   </thead>
   <tbody>
     {% for p in patients %}
@@ -21,6 +21,14 @@
       <td><a href="{{ url_for('site.patient_detail', patient_id=p.patient_id) }}">{{ p.name }}</a></td>
       <td>{% if p.card_uid %}<code>{{ p.card_uid }}</code>{% else %}<span class="muted">none</span>{% endif %}</td>
       <td>{{ p.dosages | selectattr("is_active") | list | length }}</td>
+      <td>
+        {% set flags = flags_by_patient[p.patient_id] %}
+        {% for kind, label in [("increase_load", "Increase load"), ("new_exercises", "New exercises")] %}
+          {% set count = flags | selectattr("kind", "equalto", kind) | list | length %}
+          {% if count %}<span class="flag flag-{{ kind }}">{{ label }}{% if count > 1 %} ×{{ count }}{% endif %}</span>{% endif %}
+        {% endfor %}
+        {% if not flags %}<span class="muted">none</span>{% endif %}
+      </td>
       <td>{{ p.sessions | length }}</td>
     </tr>
     {% endfor %}

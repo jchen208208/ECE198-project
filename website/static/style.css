@@ -73,6 +73,15 @@ button.danger { color: #b42318; }
 
 nav { display: flex; gap: 1.25rem; }
 
+/* ---------- progress flags ---------- */
+.flags { display: grid; gap: 0.5rem; padding: 0; list-style: none; }
+.flag-item { display: flex; flex-direction: column; padding: 0.6rem 0.9rem; border-left: 4px solid; border-radius: 4px; }
+.flag-item.flag-increase_load { background: #ecfdf3; border-color: #12b76a; }
+.flag-item.flag-new_exercises { background: #fffaeb; border-color: #f79009; }
+.flag { display: inline-block; margin: 0.1rem 0.25rem 0.1rem 0; padding: 0.1rem 0.5rem; font-size: 0.85em; border-radius: 999px; }
+.flag.flag-increase_load { color: #067647; background: #ecfdf3; }
+.flag.flag-new_exercises { color: #b54708; background: #fffaeb; }
+
 /* ---------- station simulator ---------- */
 .sim { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2rem; margin-top: 1rem; }
 .station { width: 300px; max-width: 100%; padding: 1rem; background: #2b2f36; border-radius: 12px; }
