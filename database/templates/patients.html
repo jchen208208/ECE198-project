@@ -12,13 +12,15 @@
 {% if patients %}
 <table>
   <thead>
-    <tr><th>ID</th><th>Name</th><th>Sessions</th></tr>
+    <tr><th>ID</th><th>Name</th><th>Card</th><th>Exercises</th><th>Sessions</th></tr>
   </thead>
   <tbody>
     {% for p in patients %}
     <tr>
       <td>{{ p.patient_id }}</td>
       <td><a href="{{ url_for('site.patient_detail', patient_id=p.patient_id) }}">{{ p.name }}</a></td>
+      <td>{% if p.card_uid %}<code>{{ p.card_uid }}</code>{% else %}<span class="muted">none</span>{% endif %}</td>
+      <td>{{ p.dosages | selectattr("is_active") | list | length }}</td>
       <td>{{ p.sessions | length }}</td>
     </tr>
     {% endfor %}

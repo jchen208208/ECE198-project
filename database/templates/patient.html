@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ patient.name }} · CCCARE Staff{% endblock %}
 
+{% macro num(value) -%}
+  {{ "%g" % value if value is not none else "" }}
+{%- endmacro %}
+
 {% block content %}
 <p><a href="{{ url_for('site.patient_list') }}">&larr; All patients</a></p>
 <h1>{{ patient.name }}</h1>
@@ -9,20 +13,78 @@
   <h2>Details</h2>
   <form method="post" action="{{ url_for('site.edit_patient', patient_id=patient.patient_id) }}" class="inline">
     <label>Name <input name="name" value="{{ patient.name }}" required maxlength="100"></label>
+    <label>Card ID <input name="card_uid" value="{{ patient.card_uid or '' }}" placeholder="e.g. CARD001" maxlength="32"></label>
     <button>Save</button>
   </form>
-  {# TODO: add a card ID field once the patient table has a card_uid column #}
 </section>
 
-<section>
+<section id="plan">
   <h2>Exercise plan (dosage)</h2>
-  <p class="placeholder">
-    Coming soon: needs a <code>dosages</code> table (exercise, type, sets, reps, load, minutes).
-    Staff will view and edit each exercise's sets, reps, and load here.
-  </p>
+
+  {% if dosages %}
+  <form method="post" action="{{ url_for('site.save_dosages', patient_id=patient.patient_id) }}">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th><th>Exercise</th><th>Type</th>
+            <th>Sets</th><th>Reps</th><th>Load (lb)</th><th>Minutes</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in dosages %}
+          {% set id = d.dosage_id %}
+          <tr>
+            <td><input class="num" type="number" name="position-{{ id }}" value="{{ d.position }}" min="0" required></td>
+            <td>{{ d.exercise }}</td>
+            <td><span class="tag">{{ d.exercise_type }}</span></td>
+            {% if d.exercise_type == "strength" %}
+              <td><input class="num" type="number" name="sets-{{ id }}" value="{{ num(d.sets) }}" min="1" required></td>
+              <td><input class="num" type="number" name="reps-{{ id }}" value="{{ num(d.reps) }}" min="1" required></td>
+              <td><input class="num" type="number" name="load_lb-{{ id }}" value="{{ num(d.load_lb) }}" min="0" step="any" placeholder="body wt"></td>
+              <td class="muted">–</td>
+            {% elif d.exercise_type == "cardio" %}
+              <td class="muted">–</td><td class="muted">–</td><td class="muted">–</td>
+              <td><input class="num" type="number" name="minutes-{{ id }}" value="{{ num(d.minutes) }}" min="1" required></td>
+            {% else %}
+              <td colspan="4" class="muted">Marked done at the station</td>
+            {% endif %}
+            <td>
+              <button class="link danger" formaction="{{ url_for('site.remove_dosage', dosage_id=id) }}"
+                      formnovalidate onclick="return confirm('Remove this exercise from the plan?')">Remove</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p><button>Save changes</button></p>
+  </form>
+  {% else %}
+  <p class="muted">No exercises yet. Add the first one below.</p>
+  {% endif %}
+
+  <h3>Add exercise</h3>
+  <form method="post" action="{{ url_for('site.add_dosage', patient_id=patient.patient_id) }}" class="inline">
+    <input name="exercise" placeholder="Exercise, e.g. Goblet squats" list="exercise-names" required maxlength="100">
+    <select name="exercise_type">
+      <option value="strength">Strength</option>
+      <option value="cardio">Cardio</option>
+      <option value="mobility">Mobility / stretch</option>
+    </select>
+    <input class="num" type="number" name="sets" placeholder="Sets" min="1">
+    <input class="num" type="number" name="reps" placeholder="Reps" min="1">
+    <input class="num" type="number" name="load_lb" placeholder="Load lb" min="0" step="any">
+    <input class="num" type="number" name="minutes" placeholder="Minutes" min="1">
+    <button>Add</button>
+  </form>
+  <p class="hint">Strength: sets and reps (load optional, blank = bodyweight). Cardio: minutes. Mobility / stretch: nothing else needed.</p>
+  <datalist id="exercise-names">
+    {% for name in sample_exercises %}<option value="{{ name }}">{% endfor %}
+  </datalist>
 </section>
 
-<section>
+<section id="sessions">
   <h2>Sessions</h2>
   <form method="post" action="{{ url_for('site.add_session', patient_id=patient.patient_id) }}" class="inline">
     <label>Date <input type="date" name="date" value="{{ today }}" required></label>
@@ -52,7 +114,7 @@
 <section>
   <h2>Exercise log &amp; flags</h2>
   <p class="placeholder">
-    Coming soon: needs a <code>logs</code> table filled in by the station.
+    Coming soon: the station API will fill the <code>exercise_logs</code> table.
     This will show what the patient actually did, plus the "increase load" and "new exercises due" flags.
   </p>
 </section>

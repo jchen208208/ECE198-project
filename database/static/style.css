@@ -39,12 +39,20 @@ th { background: var(--soft); font-weight: 600; }
 
 form.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 
-input {
+input, select {
   padding: 0.4rem 0.6rem;
   font: inherit;
   border: 1px solid var(--border);
   border-radius: 4px;
+  background: #fff;
 }
+input.num { width: 6rem; }
+
+.table-wrap { overflow-x: auto; }
+td { vertical-align: middle; }
+.tag { padding: 0.1rem 0.5rem; font-size: 0.85em; background: var(--soft); border: 1px solid var(--border); border-radius: 999px; }
+.hint { font-size: 0.9em; color: var(--muted); }
+h3 { margin-top: 1.5rem; }
 
 button {
   padding: 0.4rem 0.9rem;
@@ -56,6 +64,8 @@ button {
   cursor: pointer;
 }
 button:hover { filter: brightness(1.1); }
+button.link { padding: 0; color: var(--accent); background: none; text-decoration: underline; }
+button.danger { color: #b42318; }
 
 .flash { padding: 0.6rem 0.9rem; background: #e8f1fb; border-left: 4px solid var(--accent); }
 .muted { color: var(--muted); }
