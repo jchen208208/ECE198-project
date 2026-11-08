@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Station simulator · CCCARE Staff{% endblock %}
+
+{% block content %}
+<h1>Station simulator</h1>
+<p class="muted">
+  Works like the ESP32 station: tap a card, adjust with − / +, press ✓.
+  It calls the same <code>/api/next</code> and <code>/api/log</code> endpoints the ESP32 will use.
+</p>
+
+<div class="sim">
+  <div class="station">
+    <div class="screen" aria-live="polite">
+      <div class="line" id="line1"></div>
+      <div class="line" id="line2"></div>
+      <div class="line" id="line3"></div>
+      <div class="line" id="line4"></div>
+    </div>
+    <div class="station-buttons">
+      <button type="button" id="minus" aria-label="Minus">−</button>
+      <button type="button" id="plus" aria-label="Plus">+</button>
+      <button type="button" id="ok" aria-label="Done">✓</button>
+    </div>
+  </div>
+
+  <div class="tap">
+    <h2>Tap a card</h2>
+    <form id="tap-form" class="inline">
+      <input id="card" placeholder="Card ID, e.g. CARD001" maxlength="32" required>
+      <button>Tap</button>
+    </form>
+    {% if patients %}
+    <p class="hint">Or tap one of the assigned cards:</p>
+    <div class="chips">
+      {% for p in patients %}
+      <button type="button" class="chip" data-card="{{ p.card_uid }}">{{ p.name }} · {{ p.card_uid }}</button>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="hint">No cards assigned yet. Give a patient a Card ID on their page first.</p>
+    {% endif %}
+  </div>
+</div>
+
+<section>
+  <h2>Requests</h2>
+  <p class="hint">What the ESP32 would send and get back (newest first).</p>
+  <ol id="requests" class="requests"></ol>
+</section>
+
+<script src="{{ url_for('site.static', filename='simulator.js') }}"></script>
+{% endblock %}

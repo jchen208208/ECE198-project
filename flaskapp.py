@@ -29,9 +29,11 @@ from database import models  # noqa: E402,F401  (registers the tables)
 with app.app_context():
     db.create_all()
 
-# Staff website pages
+# Staff website pages + station API (website/)
 from website.routes import site  # noqa: E402
+from website.api import api  # noqa: E402
 app.register_blueprint(site)
+app.register_blueprint(api)
 
 if __name__ == "__main__":
     app.run(debug=True)

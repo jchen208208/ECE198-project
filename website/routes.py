@@ -228,3 +228,14 @@ def add_session(patient_id):
     db.session.commit()
     flash(f"Added session on {session_date}.")
     return _back_to(patient_id, "sessions")
+
+
+# ---------- station simulator ----------
+
+@site.get("/simulator")
+def simulator():
+    """A browser version of the ESP32 station. It calls the same API (website/api.py)."""
+    patients_with_cards = db.session.execute(
+        db.select(Patient).where(Patient.card_uid.is_not(None)).order_by(Patient.name)
+    ).scalars().all()
+    return render_template("simulator.html", patients=patients_with_cards)

@@ -70,3 +70,33 @@ button.danger { color: #b42318; }
 .flash { padding: 0.6rem 0.9rem; background: #e8f1fb; border-left: 4px solid var(--accent); }
 .muted { color: var(--muted); }
 .placeholder { padding: 1rem; color: var(--muted); border: 1px dashed var(--border); border-radius: 4px; }
+
+nav { display: flex; gap: 1.25rem; }
+
+/* ---------- station simulator ---------- */
+.sim { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2rem; margin-top: 1rem; }
+.station { width: 300px; max-width: 100%; padding: 1rem; background: #2b2f36; border-radius: 12px; }
+.screen {
+  min-height: 7.5rem;
+  padding: 0.75rem;
+  font-family: ui-monospace, Consolas, monospace;
+  color: #d6ecff;
+  background: #000;
+  border-radius: 4px;
+}
+.screen .line { min-height: 1.5em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.station-buttons { display: flex; gap: 0.75rem; margin-top: 1rem; }
+.station-buttons button { flex: 1; padding: 0.6rem 0; font-size: 1.4rem; border-radius: 999px; }
+.tap { flex: 1; min-width: 260px; }
+.tap h2 { margin-top: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip { color: var(--accent); background: #fff; border: 1px solid var(--border); }
+.requests { padding-left: 1.25rem; font-size: 0.85rem; }
+.requests pre {
+  margin: 0.25rem 0;
+  padding: 0.5rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--soft);
+  border-radius: 4px;
+}
