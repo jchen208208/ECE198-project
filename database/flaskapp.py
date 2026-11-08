@@ -1,5 +1,5 @@
 from flask import Flask
-from extensions import db
+from rehab_app.extensions import db
 
 app = Flask(__name__)
 
@@ -12,7 +12,7 @@ app.config["SECRET_KEY"] = "change-this-to-a-random-secret"
 db.init_app(app)
 
 # Import database models
-import models
+import rehab_app.models as models
 
 # Create database tables
 with app.app_context():

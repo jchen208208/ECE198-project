@@ -1,4 +1,4 @@
-from extensions import db
+from rehab_app.extensions import db
 
 
 class Patient(db.Model):

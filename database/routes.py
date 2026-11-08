@@ -6,8 +6,8 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
-from extensions import db
-from models import Patient, Session
+from rehab_app.extensions import db
+from rehab_app.models import Patient, Session
 
 site = Blueprint("site", __name__)
 
