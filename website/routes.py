@@ -7,10 +7,11 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
-from extensions import db
-from models import Dosage, Patient, Session
+from database.extensions import db
+from database.models import Dosage, Patient, Session
 
-site = Blueprint("site", __name__)
+# This folder holds its own templates/ and static/ (CSS).
+site = Blueprint("site", __name__, template_folder="templates", static_folder="static", static_url_path="/static")
 
 EXERCISE_TYPES = ("strength", "cardio", "mobility")
 
