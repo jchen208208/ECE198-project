@@ -18,5 +18,9 @@ import models
 with app.app_context():
     db.create_all()
 
+# Staff site pages (routes.py)
+from routes import site
+app.register_blueprint(site)
+
 if __name__ == "__main__":
     app.run(debug=True)

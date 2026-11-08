@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Patients · CCCARE Staff{% endblock %}
+
+{% block content %}
+<h1>Patients</h1>
+
+<form method="post" action="{{ url_for('site.add_patient') }}" class="inline">
+  <input name="name" placeholder="Full name" required maxlength="100">
+  <button>Add patient</button>
+</form>
+
+{% if patients %}
+<table>
+  <thead>
+    <tr><th>ID</th><th>Name</th><th>Sessions</th></tr>
+  </thead>
+  <tbody>
+    {% for p in patients %}
+    <tr>
+      <td>{{ p.patient_id }}</td>
+      <td><a href="{{ url_for('site.patient_detail', patient_id=p.patient_id) }}">{{ p.name }}</a></td>
+      <td>{{ p.sessions | length }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No patients yet. Add one above.</p>
+{% endif %}
+{% endblock %}
