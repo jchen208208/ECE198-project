@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ patient.name }} · CCCARE Staff{% endblock %}
+
+{% block content %}
+<p><a href="{{ url_for('site.patient_list') }}">&larr; All patients</a></p>
+<h1>{{ patient.name }}</h1>
+
+<section>
+  <h2>Details</h2>
+  <form method="post" action="{{ url_for('site.edit_patient', patient_id=patient.patient_id) }}" class="inline">
+    <label>Name <input name="name" value="{{ patient.name }}" required maxlength="100"></label>
+    <button>Save</button>
+  </form>
+  {# TODO: add a card ID field once the patient table has a card_uid column #}
+</section>
+
+<section>
+  <h2>Exercise plan (dosage)</h2>
+  <p class="placeholder">
+    Coming soon: needs a <code>dosages</code> table (exercise, type, sets, reps, load, minutes).
+    Staff will view and edit each exercise's sets, reps, and load here.
+  </p>
+</section>
+
+<section>
+  <h2>Sessions</h2>
+  <form method="post" action="{{ url_for('site.add_session', patient_id=patient.patient_id) }}" class="inline">
+    <label>Date <input type="date" name="date" value="{{ today }}" required></label>
+    <button>Add session</button>
+  </form>
+
+  {% if sessions %}
+  <table>
+    <thead>
+      <tr><th>Date</th><th>Scheduled</th><th>Active</th></tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td>{{ s.date }}</td>
+        <td>{{ "Yes" if s.is_scheduled else "No" }}</td>
+        <td>{{ "Yes" if s.is_active else "No" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No sessions yet.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Exercise log &amp; flags</h2>
+  <p class="placeholder">
+    Coming soon: needs a <code>logs</code> table filled in by the station.
+    This will show what the patient actually did, plus the "increase load" and "new exercises due" flags.
+  </p>
+</section>
+{% endblock %}
