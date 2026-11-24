@@ -1,0 +1,4 @@
+{
+  "server_url": "http://192.168.137.1:5000",
+  "api_key": "CHANGE-ME-same-value-as-the-server-API_KEY"
+}

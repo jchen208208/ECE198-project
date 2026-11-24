@@ -2,6 +2,7 @@
 
 Run from anywhere:  python flaskapp.py
 """
+import os
 from pathlib import Path
 
 from flask import Flask
@@ -17,7 +18,7 @@ app = Flask(__name__, instance_path=str(BASE_DIR / "database" / "instance"), sta
 # Configure the database
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///rehab.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SECRET_KEY"] = "change-this-to-a-random-secret"
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-only-secret-change-me")
 
 # Initialize SQLAlchemy
 db.init_app(app)
@@ -36,4 +37,5 @@ app.register_blueprint(site)
 app.register_blueprint(api)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # 0.0.0.0 so the UNO Q (and other devices on the network) can reach the server
+    app.run(host="0.0.0.0", port=5000, debug=True)
