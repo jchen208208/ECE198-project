@@ -20,7 +20,9 @@ POST /api/log      JSON body, e.g. {"card": "CARD001", "dosage_id": 5, "set": 1,
 
 Replies are small, flat JSON so the ESP32 can read them with ArduinoJson.
 """
+import hmac
 import math
+import os
 from datetime import date, datetime, time
 
 from flask import Blueprint, jsonify, request
@@ -31,6 +33,15 @@ from database.models import Dosage, ExerciseLog, Patient
 from .routes import normalize_card
 
 api = Blueprint("api", __name__, url_prefix="/api")
+
+
+@api.before_request
+def _check_api_key():
+    """If the API_KEY environment variable is set, stations must send it as an X-API-Key header.
+    Not set = no check (handy for the simulator page and local testing)."""
+    expected = os.environ.get("API_KEY")
+    if expected and not hmac.compare_digest(request.headers.get("X-API-Key", ""), expected):
+        return _error(401, "unauthorized", "Missing or wrong X-API-Key.")
 
 
 # ---------- helpers ----------
@@ -116,6 +127,31 @@ def next_exercise():
     return jsonify(done=True, first_name=_first_name(patient), no_plan=not plan)
 
 
+@api.get("/plan")
+def plan():
+    """The patient's whole active plan in order (used by the UNO Q station on a card tap).
+
+    GET /api/plan?card=CARD001
+    200 {"first_name": "Pat", "exercises": [{"exercise": "Goblet squats", "type": "strength",
+         "sets": 2, "reps": 15, "load_lb": 10.0, "minutes": null}, ...]}
+    404 {"error": "unknown_card", ...}
+    """
+    if not request.args.get("card"):
+        return _error(400, "missing_card", "Add ?card=<card ID> to the URL.")
+    patient = _patient_for_card(request.args["card"])
+    if patient is None:
+        return _error(404, "unknown_card", "This card isn't assigned to a patient.")
+    dosages = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
+    return jsonify(
+        first_name=_first_name(patient),
+        exercises=[
+            dict(exercise=d.exercise, type=d.exercise_type, sets=d.sets, reps=d.reps,
+                 load_lb=d.load_lb, minutes=d.minutes)
+            for d in dosages
+        ],
+    )
+
+
 @api.post("/log")
 def log_set():
     data = request.get_json(silent=True)
@@ -173,3 +209,47 @@ def log_set():
     db.session.commit()
 
     return jsonify(ok=True, log_id=log.log_id, set=set_number, updated=updated)
+
+
+@api.post("/workout")
+def log_workout():
+    """Whole workout in one call (used by the UNO Q station).
+
+    POST {"card": "A1 B2 C3 D4", "reps": [10, 12, 8, 6]}
+    The i-th number is matched to the i-th exercise of the patient's active plan (plan order).
+    Strength: logs the next set with those reps (load comes from the plan). Cardio/mobility:
+    logged as done if the number is above 0. Extra numbers beyond the plan are ignored.
+    200 {"ok": true, "logged": 3, "skipped": 1}
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return _error(400, "bad_request", "Send a JSON object with Content-Type: application/json.")
+    patient = _patient_for_card(data.get("card"))
+    if patient is None:
+        return _error(404, "unknown_card", "This card isn't assigned to a patient.")
+    reps_list = data.get("reps")
+    if not isinstance(reps_list, list) or not all(
+        isinstance(r, int) and not isinstance(r, bool) and r >= 0 for r in reps_list
+    ):
+        return _error(400, "bad_value", "reps must be a list of whole numbers, 0 or more.")
+
+    plan = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
+    done_today = _sets_done_today(patient.patient_id)
+    logged = skipped = 0
+    for dosage, reps in zip(plan, reps_list):
+        if reps == 0:
+            skipped += 1
+            continue
+        is_strength = dosage.exercise_type == "strength"
+        db.session.add(ExerciseLog(
+            patient=patient,
+            dosage=dosage,
+            set_number=done_today.get(dosage.dosage_id, 0) + 1,
+            reps=reps if is_strength else None,
+            load_lb=dosage.load_lb if is_strength else None,
+            minutes=dosage.minutes if dosage.exercise_type == "cardio" else None,
+            logged_at=datetime.now(),
+        ))
+        logged += 1
+    db.session.commit()
+    return jsonify(ok=True, logged=logged, skipped=skipped)
