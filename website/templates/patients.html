@@ -2,39 +2,41 @@
 {% block title %}Patients · CCCARE Staff{% endblock %}
 
 {% block content %}
-<h1>Patients</h1>
-
-<form method="post" action="{{ url_for('site.add_patient') }}" class="inline">
-  <input name="name" placeholder="Full name" required maxlength="100">
-  <button>Add patient</button>
-</form>
+<div class="page-head">
+  <h1>Patients</h1>
+  <form method="post" action="{{ url_for('site.add_patient') }}" class="inline">
+    <input name="name" placeholder="Full name" aria-label="Full name" required maxlength="100">
+    <button>Add patient</button>
+  </form>
+</div>
 
 {% if patients %}
-<table>
-  <thead>
-    <tr><th>ID</th><th>Name</th><th>Card</th><th>Exercises</th><th>Flags</th><th>Scheduled</th></tr>
-  </thead>
-  <tbody>
-    {% for p in patients %}
-    <tr>
-      <td>{{ p.patient_id }}</td>
-      <td><a href="{{ url_for('site.patient_detail', patient_id=p.patient_id) }}">{{ p.name }}</a></td>
-      <td>{% if p.card_uid %}<code>{{ p.card_uid }}</code>{% else %}<span class="muted">none</span>{% endif %}</td>
-      <td>{{ p.dosages | selectattr("is_active") | list | length }}</td>
-      <td>
-        {% set flags = flags_by_patient[p.patient_id] %}
-        {% for kind, label in [("increase_load", "Increase load"), ("new_exercises", "New exercises")] %}
-          {% set count = flags | selectattr("kind", "equalto", kind) | list | length %}
-          {% if count %}<span class="flag flag-{{ kind }}">{{ label }}{% if count > 1 %} ×{{ count }}{% endif %}</span>{% endif %}
-        {% endfor %}
-        {% if not flags %}<span class="muted">none</span>{% endif %}
-      </td>
-      <td>{{ p.sessions | length }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="patients">
+    <thead>
+      <tr><th>Name</th><th>Card</th><th class="n">Exercises</th><th>Flags</th><th class="n">Sessions</th></tr>
+    </thead>
+    <tbody>
+      {% for p in patients %}
+      <tr>
+        <td><a class="name" href="{{ url_for('site.patient_detail', patient_id=p.patient_id) }}">{{ p.name }}</a></td>
+        <td>{% if p.card_uid %}<span class="card-id">{{ p.card_uid }}</span>{% else %}<span class="muted">None</span>{% endif %}</td>
+        <td class="n">{{ p.dosages | selectattr("is_active") | list | length }}</td>
+        <td>
+          {% set flags = flags_by_patient[p.patient_id] %}
+          {% for kind, label in [("increase_load", "Increase load"), ("new_exercises", "New exercises")] %}
+            {% set count = flags | selectattr("kind", "equalto", kind) | list | length %}
+            {% if count %}<span class="flag flag-{{ kind }}">{{ label }}{% if count > 1 %} ×{{ count }}{% endif %}</span>{% endif %}
+          {% endfor %}
+          {% if not flags %}<span class="muted">None</span>{% endif %}
+        </td>
+        <td class="n">{{ p.sessions | length }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
-<p class="muted">No patients yet. Add one above.</p>
+<p class="empty">No patients yet. Add one with their full name above.</p>
 {% endif %}
 {% endblock %}

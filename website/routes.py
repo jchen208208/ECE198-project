@@ -10,7 +10,8 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from database.extensions import db
 from database.models import Dosage, Patient, Session
 
-from .progress import log_history, patient_flags
+from .charts import completion_chart_svg, completion_summary
+from .progress import log_history, patient_flags, session_completion, session_status
 
 # This folder holds its own templates/ and static/ (CSS).
 site = Blueprint("site", __name__, template_folder="templates", static_folder="static", static_url_path="/static")
@@ -116,6 +117,7 @@ def patient_detail(patient_id):
     dosages = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
     sessions = sorted(patient.sessions, key=lambda s: s.date or date.min, reverse=True)
     history, session_count = log_history(patient)
+    completion = session_completion(patient)
     return render_template(
         "patient.html",
         patient=patient,
@@ -124,6 +126,9 @@ def patient_detail(patient_id):
         history=history,
         session_count=session_count,
         sessions=sessions,
+        session_status=session_status(patient),
+        chart_svg=completion_chart_svg(completion),
+        chart_summary=completion_summary(completion),
         sample_exercises=SAMPLE_EXERCISES,
         today=date.today().isoformat(),
     )
@@ -149,7 +154,7 @@ def edit_patient(patient_id):
     patient.name = name
     patient.card_uid = card_uid
     db.session.commit()
-    flash("Saved.")
+    flash("Details saved.")
     return _back_to(patient_id)
 
 
@@ -233,7 +238,7 @@ def add_session(patient_id):
 
     db.session.add(Session(patient=patient, date=session_date, is_scheduled=True))
     db.session.commit()
-    flash(f"Added session on {session_date}.")
+    flash(f"Scheduled a session on {session_date}.")
     return _back_to(patient_id, "sessions")
 
 

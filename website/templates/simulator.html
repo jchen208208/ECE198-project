@@ -3,7 +3,7 @@
 
 {% block content %}
 <h1>Station simulator</h1>
-<p class="muted">
+<p class="intro">
   Works like the ESP32 station: tap a card, adjust with − / +, press ✓.
   It calls the same <code>/api/next</code> and <code>/api/log</code> endpoints the ESP32 will use.
 </p>
@@ -26,7 +26,7 @@
   <div class="tap">
     <h2>Tap a card</h2>
     <form id="tap-form" class="inline">
-      <input id="card" placeholder="Card ID, e.g. CARD001" maxlength="32" required>
+      <input id="card" placeholder="Card ID, e.g. CARD001" aria-label="Card ID" maxlength="32" required>
       <button>Tap</button>
     </form>
     {% if patients %}
@@ -42,7 +42,7 @@
   </div>
 </div>
 
-<section>
+<section class="sim-log">
   <h2>Requests</h2>
   <p class="hint">What the ESP32 would send and get back (newest first).</p>
   <ol id="requests" class="requests"></ol>

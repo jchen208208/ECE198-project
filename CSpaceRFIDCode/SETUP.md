@@ -3,7 +3,8 @@
 How to get the Arduino UNO Q station talking to the Flask server. It covers the wiring, the server, the board
 software, and every problem we hit on the way.
 
-Last verified: 2026-11-24 with Arduino App Lab 0.12.0 and the `arduino:zephyr` board package 1.1.0.
+Last verified on hardware: 2026-11-24 with Arduino App Lab 0.12.0 and the `arduino:zephyr` board package 1.1.0
+(before the per-set / save-confirmation update, which was tested off-board).
 
 ## 1. How it fits together
 
@@ -19,15 +20,21 @@ The two sides talk over the **Bridge** (`Arduino_RouterBridge`). The MCU cannot 
 ```
 tap card ─► MCU ──card_tap(uid)──► Python ──GET /api/plan?card=──► Flask server
                                                                        │
- LCD / OLEDs ◄── MCU ◄──load_plan("OK;Name;Ex|reps;...")── Python ◄────┘
+ LCD / OLEDs ◄── MCU ◄──load_plan("OK;Name;Ex|kind|id|firstSet|sets|target;...")── Python ◄──┘
 
-confirm  ─► MCU ──save_workout("uid;name;reps;targets")──► Python ──POST /api/workout──► Flask server
+confirm  ─► MCU ──save_workout("uid;name;id:set:value,...")──► Python ──POST /api/workout──► Flask server
+                                                                                                   │
+ "Saved" / "Save failed" ◄── MCU ◄──save_result("OK" or "FAIL;reason")── Python ◄─────────────────┘
 ```
 
 - A card tap fetches that patient's plan from the website, so patients, cards and plans are edited **only on the
   website**. No re-flashing is needed.
+- Each set is its own step and is saved against that exact exercise (`id`) and set number, so editing the plan
+  between the tap and the save can't shift reps onto the wrong exercise.
+- The station only says **Saved** once the server confirms. Retrying a save is safe: the server updates those
+  sets instead of adding duplicates.
 - If the server does not answer within 4 seconds, the sketch falls back to its built-in `USERS[]` list and the 4
-  default exercises.
+  default exercises. Those workouts are **not saved** (the LCD says "Offline: unsaved").
 - Guests (button B1 on the scan screen) use the default exercises and are **not saved**.
 
 ## 2. Hardware
@@ -62,7 +69,7 @@ In the website (`http://127.0.0.1:5000`):
    spaces and uppercases it (`A1B2C3D4`).
 3. Give the patient **at least one exercise**. A card with no plan shows "No plan yet for <name>" on the LCD.
 
-Plan order matters: the n-th number the station saves goes to the n-th exercise of the patient's active plan.
+The station shows the exercises in plan order (the website's "Order" column), one step per set.
 
 Allow Python through **Windows Defender Firewall** (private networks), or the board cannot reach the server.
 
@@ -163,9 +170,18 @@ Later builds are cached. A good start is the LCD saying `Scan your card`.
 
 ## 6. Using the station
 1. Tap a card. The LCD shows "Loading plan...", then the patient's first exercise.
-2. Turn the **knob** to set the reps done (0 to 12). **B1** = next, **B2** = back.
+2. One step per set (a strength exercise with 2 sets shows "Set 1/2", then "Set 2/2"). **B1** = next, **B2** = back.
+   - **Strength:** turn the knob to the reps done (0 to 30). The next set of the same exercise starts at the same number.
+   - **Cardio:** turn the knob to the minutes done (0 to 40).
+   - **Mobility / stretch:** already marked "Done". A clear turn of the knob switches it to "Skipped" (and back).
+   - 0 (or Skipped) = not done: nothing is logged for that step.
 3. Review screens, then Confirm (**B1** save, **B2** back).
-4. The workout is saved to the website and appears in the patient's log history.
+4. "Saving..." until the server answers, then:
+   - **Saved, <name>**: it's in the patient's log history on the website.
+   - **Save failed!**: the reason is on the top OLED (e.g. `No server connection`, `HTTP 401 unauthorized`).
+     **B1** = retry (safe, no duplicates), **B2** = drop the workout.
+
+Tapping the same card again later that day logs further sets (set 3, 4, ...) instead of overwriting the earlier ones.
 
 ## 7. Troubleshooting
 
@@ -183,12 +199,16 @@ Later builds are cached. A good start is the LCD saying `Scan your card`.
 | `Plan request failed: HTTP 401` (App Lab console) | `api_key` in `config.json` does not match the server's `API_KEY`. |
 | LCD: "Unknown card" | The card is not assigned to a patient on the website. |
 | LCD: "No plan yet for <name>" | The patient has no exercises. Add some on the website. |
+| "Save failed!" / `No server connection` | Same causes as "Loading plan..." forever. Fix it, then press B1 to retry. |
+| "Save failed!" / `HTTP 401 unauthorized` | `api_key` in `config.json` does not match the server's `API_KEY`. |
+| "Save failed!" / `No answer` | The Linux side never replied. Check the App Lab console; is `python/main.py` running? |
+| LCD: "Offline: unsaved" | The plan didn't load in time, so the station used its built-in list. Not saved; tap again once the server is up. |
 
 ## 8. Limitations
-- One set per exercise is saved, even if the plan has several. Every exercise uses the knob as "reps"; a cardio exercise
-  shows its minutes as the target.
-- At most 8 exercises per plan, 16 characters per exercise name, and 12 reps on the knob.
-- The offline fallback (`USERS[]` in the sketch) is only a safety net; cards normally live on the website.
+- At most 16 sets per plan (later exercises are left off; the App Lab console says so), 16 characters per exercise
+  name. The knob goes up to 30 reps or 40 minutes; bigger targets are shown capped.
+- Strength load always comes from the plan (the station has no way to enter a different load).
+- The offline fallback (`USERS[]` in the sketch) is only a safety net for showing the station; it never saves.
 - Sent over plain HTTP, so the API key is visible to anyone sniffing the network. Fine for a demo, not for real patient data.
 
 ## 9. Files

@@ -16,14 +16,15 @@
 //  LiquidCrystal, Arduino_RouterBridge (for Monitor output on UNO Q).
 //
 //  How it works:
-//    1. "Scan your card" – tap an RFID card/tag. Known cards load that
-//       person's targets. Unknown cards show their UID (copy it into USERS).
-//       Press B1 on the scan screen to start as a guest.
-//    2. For each exercise, turn the knob to set reps done.
-//       B1 = next exercise, B2 = previous exercise.
+//    1. "Scan your card" – tap an RFID card/tag. The patient's plan is loaded
+//       from the website. Unknown cards show their UID. Press B1 on the scan
+//       screen to start as a guest (not saved).
+//    2. One step per set. Strength: turn the knob to the reps done. Cardio:
+//       turn the knob to the minutes done. Mobility: marked done; turn the
+//       knob to switch to skipped. B1 = next step, B2 = previous step.
 //    3. Review screens, then Confirm (B1 = save, B2 = back).
-//    4. Done – summary is printed to the Monitor. Scan a card or press B1
-//       to start again.
+//    4. "Saving..." until the website confirms. Then "Saved", or "Save failed"
+//       with B1 = retry, B2 = discard. Scan a card or press B1 to start again.
 // =====================================================================
 
 #include <Arduino.h>
@@ -57,15 +58,18 @@ MFRC522 rfid(PIN_RC_SS, PIN_RC_RST);
 // The normal plan comes from the website: after a card tap, python/main.py fetches the
 // patient's plan from the server and sends it here (load_plan). The DEFAULT_* lists below
 // are only used for guests and as an offline fallback (USERS[]) if the server doesn't answer.
-const int MAX_EX = 8;                 // most exercises a plan can have
+const int MAX_STEPS = 16;             // most steps (one per set) a plan can have; same as python/main.py
 const int DEFAULT_EX = 4;
 const char* defaultName[DEFAULT_EX] = {"Chest press", "Squat", "Row", "Shoulder press"};
 const int defaultTarget[DEFAULT_EX] = {10, 12, 10, 8};
-const int MAX_REPS = 12;        // knob range is 0..MAX_REPS over the full turn
+const int MAX_REPS = 30;        // knob range for strength: 0..MAX_REPS reps over the full turn
+const int MAX_MINUTES = 40;     // knob range for cardio: 0..MAX_MINUTES minutes
 const unsigned long PLAN_WAIT_MS = 4000;   // how long to wait for the server before falling back
+const unsigned long SAVE_WAIT_MS = 8000;   // how long to wait for the server to confirm a save
 
 // ---------- Offline fallback users ----------
 // Only used if the server can't be reached. Cards normally live in the website.
+// Workouts from these sessions are NOT saved (they aren't tied to the patient's real plan).
 struct User {
   uint8_t uidLen;               // 4 for most cards/fobs, 7 for some tags
   uint8_t uid[7];
@@ -75,19 +79,29 @@ struct User {
 
 const User USERS[] = {
   { 4, {0xDE, 0xAD, 0xBE, 0xEF}, "Andre", {10, 12, 10, 8} },
-  { 4, {0x12, 0x34, 0x56, 0x78}, "Guest2", {8, 10, 8, 6} },
-};
+  { 4, {0x12, 0x34, 0x56, 0x78}, "Guest2", {8, 10, 8, 6} },};
 const int NUM_USERS = sizeof(USERS) / sizeof(USERS[0]);
 
 // ---------- Session data ----------
-int numEx = DEFAULT_EX;
-char exName[MAX_EX][17];        // max 16 chars
+// One "step" per set: a strength exercise with 2 sets is 2 steps.
+int numSteps = DEFAULT_EX;
+char exName[MAX_STEPS][17];     // max 16 chars
+char exKind[MAX_STEPS];         // 's' strength (reps), 'c' cardio (minutes), 'm' mobility (done/skipped)
+int dosageId[MAX_STEPS];        // the exercise's ID on the website (0 = not from the website)
+int setNo[MAX_STEPS];           // set number the website logs this step as
+int setIdx[MAX_STEPS];          // shown as "Set setIdx/setsOf"
+int setsOf[MAX_STEPS];
+int target[MAX_STEPS];          // prescribed reps / minutes (1 for mobility)
+int actual[MAX_STEPS];          // what was done: reps, minutes, or 1 = done / 0 = skipped
 char userName[16] = "Guest";
-int exTarget[MAX_EX];
-int repsDone[MAX_EX];
 char lastUid[22] = "";          // "DE AD BE EF" style text
 int pendingUser = -1;           // offline fallback match for the card being loaded
 bool noPlan = false;            // card is registered but the patient has no exercises yet
+bool fromServer = false;        // plan came from the website, so the workout can be saved
+
+enum SaveResult { SAVE_OK, SAVE_GUEST, SAVE_OFFLINE };
+SaveResult saveResult = SAVE_OK;
+char saveError[22] = "";        // reason shown on "Save failed"
 
 // ---------- Buttons ----------
 const unsigned long DEBOUNCE_MS = 30;
@@ -108,23 +122,49 @@ bool pressed(Btn &b) {
 }
 
 // ---------- State ----------
-enum State { S_SCAN, S_LOADING, S_UNKNOWN, S_EXERCISE, S_REVIEW, S_CONFIRM, S_DONE };
+enum State { S_SCAN, S_LOADING, S_UNKNOWN, S_EXERCISE, S_REVIEW, S_CONFIRM, S_SAVING, S_SAVE_FAILED, S_DONE };
 State state = S_SCAN;
 int idx = 0;
 bool dirty = true;
 unsigned long unknownSince = 0;
 unsigned long loadingSince = 0;
+unsigned long savingSince = 0;
 const unsigned long UNKNOWN_SHOW_MS = 4000;
 
 // ---------- Small helpers ----------
 int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+int maxForKind(char kind) {
+  if (kind == 's') return MAX_REPS;
+  if (kind == 'c') return MAX_MINUTES;
+  return 1;                     // mobility: 0 = skipped, 1 = done
+}
+
+// n-th field (from 0) of a text split on sep; "" if there is no such field
+String fieldAt(const String &s, char sep, int n) {
+  int start = 0;
+  for (int k = 0; k < n; k++) {
+    start = s.indexOf(sep, start);
+    if (start < 0) return "";
+    start++;
+  }
+  int end = s.indexOf(sep, start);
+  return end < 0 ? s.substring(start) : s.substring(start, end);
+}
+
+int countFields(const String &s, char sep) {
+  int n = 1;
+  for (unsigned int i = 0; i < s.length(); i++) if (s.charAt(i) == sep) n++;
+  return n;
+}
+
 // ---------- Potentiometer ----------
-// "Pick-up" behaviour: when you arrive on an exercise, the knob does nothing
+// "Pick-up" behaviour: when you arrive on a step, the knob does nothing
 // until you actually turn it, so the old value isn't overwritten by
 // wherever the knob happened to be.
 const int ADC_MAX = 1023;       // 10-bit (set in setup)
 const int PICKUP_MARGIN = 40;   // how far the knob must move to "grab" the value
+const int TOGGLE_MARGIN = 250;  // mobility: a turn this big switches done <-> skipped
 int potBase = 0;
 bool potLive = false;
 unsigned long lastPotRead = 0;
@@ -135,12 +175,12 @@ int readPot() {
   return (int)(sum / 8);
 }
 
-// Raw reading -> reps, with hysteresis so the number doesn't flicker
-int potToReps(int raw, int current) {
-  const float step = (float)(ADC_MAX + 1) / (MAX_REPS + 1);
+// Raw reading -> 0..maxV, with hysteresis so the number doesn't flicker
+int potToValue(int raw, int current, int maxV) {
+  const float step = (float)(ADC_MAX + 1) / (maxV + 1);
   float centre = (current + 0.5f) * step;
   if (fabs(raw - centre) < step * 0.65f) return current;   // stay put
-  return clampInt((int)(raw / step), 0, MAX_REPS);
+  return clampInt((int)(raw / step), 0, maxV);
 }
 
 void armPot() {
@@ -149,16 +189,24 @@ void armPot() {
 }
 
 // ---------- Session control ----------
-// Start with the built-in 4 exercises (guests / offline fallback)
+// The built-in 4 exercises (guests / offline fallback). These are never saved.
+void loadDefaults(const int* targets) {
+  numSteps = DEFAULT_EX;
+  for (int i = 0; i < numSteps; i++) {
+    strncpy(exName[i], defaultName[i], 16); exName[i][16] = '\0';
+    exKind[i] = 's';
+    dosageId[i] = 0;
+    setNo[i] = 1; setIdx[i] = 1; setsOf[i] = 1;
+    target[i] = clampInt(targets[i], 0, MAX_REPS);
+    actual[i] = 0;
+  }
+  fromServer = false;
+}
+
 void startSession(const char* name, const int* targets) {
   strncpy(userName, name, sizeof(userName) - 1);
   userName[sizeof(userName) - 1] = '\0';
-  numEx = DEFAULT_EX;
-  for (int i = 0; i < numEx; i++) {
-    strncpy(exName[i], defaultName[i], 16); exName[i][16] = '\0';
-    exTarget[i] = targets[i];
-    repsDone[i] = 0;
-  }
+  loadDefaults(targets);
   idx = 0;
   state = S_EXERCISE;
   armPot();
@@ -167,50 +215,103 @@ void startSession(const char* name, const int* targets) {
 }
 
 // Called from the Linux side (python/main.py) after a card tap.
-//   "UNKNOWN"                              card isn't registered on the website
-//   "OK;name;ex1|reps1;ex2|reps2;..."      the patient's plan (up to MAX_EX exercises)
+//   "UNKNOWN"                card isn't registered on the website
+//   "NOPLAN;name"            registered, but no exercises assigned yet
+//   "OK;name;exercise|kind|dosageId|firstSet|sets|target;..."
+//        kind: s = strength (target reps), c = cardio (target minutes), m = mobility
+//        Each exercise becomes one step per set (up to MAX_STEPS steps).
 // Runs via provide_safe, i.e. from loop() context, so it can touch the session state.
 String loadPlan(String msg) {
   if (state != S_LOADING) return "ignored";       // answer arrived late (fallback already ran)
-  if (msg.startsWith("NOPLAN;")) {                 // registered card, but no exercises assigned yet
+  if (msg.startsWith("NOPLAN;")) {
     strncpy(userName, msg.c_str() + 7, sizeof(userName) - 1);
     userName[sizeof(userName) - 1] = '\0';
     noPlan = true;
     state = S_UNKNOWN; unknownSince = millis(); dirty = true;
     return "ok";
   }
-  if (msg.startsWith("UNKNOWN")) {
+  if (!msg.startsWith("OK;")) {                    // "UNKNOWN" or garbled
     state = S_UNKNOWN; unknownSince = millis(); dirty = true;
-    return "ok";
+    return msg.startsWith("UNKNOWN") ? "ok" : "bad";
   }
-  // split on ';'
-  int p = msg.indexOf(';');
-  if (!msg.startsWith("OK;") || p < 0) { state = S_UNKNOWN; unknownSince = millis(); dirty = true; return "bad"; }
-  int start = p + 1;
-  int q = msg.indexOf(';', start);
-  String name = (q < 0) ? msg.substring(start) : msg.substring(start, q);
+
+  String name = fieldAt(msg, ';', 1);
+  int items = countFields(msg, ';');
   int n = 0;
-  while (q >= 0 && n < MAX_EX) {
-    start = q + 1;
-    q = msg.indexOf(';', start);
-    String item = (q < 0) ? msg.substring(start) : msg.substring(start, q);
-    int bar = item.indexOf('|');
-    if (bar <= 0) continue;
-    String ex = item.substring(0, bar);
-    strncpy(exName[n], ex.c_str(), 16); exName[n][16] = '\0';
-    exTarget[n] = clampInt(item.substring(bar + 1).toInt(), 0, MAX_REPS);
-    repsDone[n] = 0;
-    n++;
+  for (int k = 2; k < items && n < MAX_STEPS; k++) {
+    String item = fieldAt(msg, ';', k);
+    String ex = fieldAt(item, '|', 0);
+    char kind = fieldAt(item, '|', 1).charAt(0);
+    int id = fieldAt(item, '|', 2).toInt();
+    int first = fieldAt(item, '|', 3).toInt();
+    int sets = fieldAt(item, '|', 4).toInt();
+    int tgt = fieldAt(item, '|', 5).toInt();
+    if (ex.length() == 0 || id <= 0 || (kind != 's' && kind != 'c' && kind != 'm')) continue;
+    if (first < 1) first = 1;
+    if (sets < 1) sets = 1;
+    for (int s = 0; s < sets && n < MAX_STEPS; s++) {
+      strncpy(exName[n], ex.c_str(), 16); exName[n][16] = '\0';
+      exKind[n] = kind;
+      dosageId[n] = id;
+      setNo[n] = first + s;
+      setIdx[n] = s + 1;
+      setsOf[n] = sets;
+      target[n] = clampInt(tgt, 0, maxForKind(kind));
+      actual[n] = (kind == 'm') ? 1 : 0;           // mobility starts as "done"
+      n++;
+    }
   }
   if (n == 0) { state = S_UNKNOWN; unknownSince = millis(); dirty = true; return "empty"; }
   strncpy(userName, name.c_str(), sizeof(userName) - 1);
   userName[sizeof(userName) - 1] = '\0';
-  numEx = n;
+  numSteps = n;
+  fromServer = true;
   idx = 0;
   state = S_EXERCISE;
   armPot();
   dirty = true;
   return "ok";
+}
+
+// Send the workout to the Linux side, which POSTs it and answers with save_result.
+// One string: "UID;name;dosageId:set:value,..."
+void sendSave() {
+  String msg = String(lastUid) + ";" + userName + ";";
+  for (int i = 0; i < numSteps; i++) {
+    if (i) msg += ",";
+    msg += dosageId[i]; msg += ":"; msg += setNo[i]; msg += ":"; msg += actual[i];
+  }
+  state = S_SAVING;
+  savingSince = millis();
+  Bridge.notify("save_workout", msg);
+}
+
+// Called from the Linux side once the server answered: "OK" or "FAIL;reason".
+String saveDone(String msg) {
+  if (state != S_SAVING) return "ignored";         // too late: already timed out
+  if (msg == "OK") {
+    saveResult = SAVE_OK;
+    state = S_DONE;
+    Monitor.println("Workout saved.");
+  } else {
+    String reason = msg.startsWith("FAIL;") ? msg.substring(5) : msg;
+    strncpy(saveError, reason.c_str(), sizeof(saveError) - 1);
+    saveError[sizeof(saveError) - 1] = '\0';
+    state = S_SAVE_FAILED;
+    Monitor.print("Save failed: ");
+    Monitor.println(saveError);
+  }
+  dirty = true;
+  return "ok";
+}
+
+void finishWorkout() {
+  printSummary();
+  if (fromServer) { sendSave(); return; }
+  // Guest or offline-fallback session: not tied to a plan on the website, so not saved
+  saveResult = lastUid[0] ? SAVE_OFFLINE : SAVE_GUEST;
+  state = S_DONE;
+  Monitor.println("Not saved (guest / offline session).");
 }
 
 void goToScan() {
@@ -223,28 +324,27 @@ void goToScan() {
 void goNext() {
   switch (state) {
     case S_EXERCISE:
-      if (idx < numEx - 1) {
+      if (idx < numSteps - 1) {
         idx++;
-        if (repsDone[idx] == 0) {
-          // New exercise: carry over the previous number and keep the knob
+        if (exKind[idx] != 'm' && actual[idx] == 0 && exKind[idx] == exKind[idx - 1]) {
+          // New step of the same kind: carry over the previous number and keep the knob
           // live, so the value doesn't drop to 0 when you press next.
-          repsDone[idx] = repsDone[idx - 1];
+          actual[idx] = actual[idx - 1];
           potBase = readPot();
           potLive = true;
         } else {
-          armPot();            // already has a value: protect it until the knob is turned
+          armPot();            // protect the value until the knob is turned
         }
         return;
       }
       state = S_REVIEW; idx = 0;
       break;
     case S_REVIEW:
-      if (idx < numEx - 1) idx++;
+      if (idx < numSteps - 1) idx++;
       else state = S_CONFIRM;
       break;
     case S_CONFIRM:
-      state = S_DONE;
-      printSummary();
+      finishWorkout();
       break;
     default: break;
   }
@@ -257,11 +357,11 @@ void goPrev() {
       break;
     case S_REVIEW:
       if (idx > 0) idx--;
-      else { state = S_EXERCISE; idx = numEx - 1; }
+      else { state = S_EXERCISE; idx = numSteps - 1; }
       break;
     case S_CONFIRM:
       state = S_REVIEW;
-      idx = numEx - 1;
+      idx = numSteps - 1;
       break;
     default: break;
   }
@@ -329,8 +429,48 @@ bool checkCard() {
 // ---------- Drawing ----------
 int targetsMet() {
   int n = 0;
-  for (int i = 0; i < numEx; i++) if (repsDone[i] >= exTarget[i]) n++;
+  for (int i = 0; i < numSteps; i++) if (actual[i] >= target[i]) n++;
   return n;
+}
+
+void lcdSet(int i) {
+  lcd.print("Set ");
+  lcd.print(setIdx[i]);
+  lcd.print("/");
+  lcd.print(setsOf[i]);
+}
+
+// Second LCD line while entering a step (fits 16 chars)
+void lcdStepLine(int i) {
+  if (exKind[i] == 's') {
+    lcdSet(i);
+    if (potLive) { lcd.print(" Reps:"); lcd.print(actual[i]); }
+    else lcd.print(" Use knob");
+  } else if (exKind[i] == 'c') {
+    lcd.print("Minutes: ");
+    if (potLive) lcd.print(actual[i]);
+    else lcd.print("knob");
+  } else {
+    lcd.print(actual[i] ? "Done. Knob=skip" : "Skipped Knob=do");
+  }
+}
+
+// Second LCD line on the review screens
+void lcdReviewLine(int i) {
+  if (exKind[i] == 's') {
+    lcdSet(i);
+    lcd.print(" ");
+    lcd.print(actual[i]);
+    lcd.print(" of ");
+    lcd.print(target[i]);
+  } else if (exKind[i] == 'c') {
+    lcd.print(actual[i]);
+    lcd.print(" of ");
+    lcd.print(target[i]);
+    lcd.print(" min");
+  } else {
+    lcd.print(actual[i] ? "Done" : "Skipped");
+  }
 }
 
 void drawLCD() {
@@ -353,28 +493,32 @@ void drawLCD() {
     case S_EXERCISE:
       lcd.print(exName[idx]);
       lcd.setCursor(0, 1);
-      lcd.print("Ex ");
-      lcd.print(idx + 1);
-      lcd.print("/");
-      lcd.print(numEx);
-      lcd.print(potLive ? " Knob=reps" : " Turn knob");   // fits 16 chars
+      lcdStepLine(idx);
       break;
     case S_REVIEW:
       lcd.print(exName[idx]);
       lcd.setCursor(0, 1);
-      lcd.print("Done:");
-      lcd.print(repsDone[idx]);
-      lcd.print(" Goal:");
-      lcd.print(exTarget[idx]);
+      lcdReviewLine(idx);
       break;
     case S_CONFIRM:
       lcd.print("Confirm entries?");
       lcd.setCursor(0, 1);
       lcd.print("B1=OK  B2=Back");
       break;
-    case S_DONE:
-      lcd.print("Done, ");
+    case S_SAVING:
+      lcd.print("Saving...");
+      lcd.setCursor(0, 1);
       lcd.print(userName);
+      break;
+    case S_SAVE_FAILED:
+      lcd.print("Save failed!");
+      lcd.setCursor(0, 1);
+      lcd.print("B1=retry B2=drop");
+      break;
+    case S_DONE:
+      if (saveResult == SAVE_OK) { lcd.print("Saved, "); lcd.print(userName); }
+      else if (saveResult == SAVE_GUEST) lcd.print("Guest: not saved");
+      else lcd.print("Offline: unsaved");
       lcd.setCursor(0, 1);
       lcd.print("Scan/B1 = new");
       break;
@@ -414,10 +558,17 @@ void drawOLED1() {
         break;
       case S_EXERCISE:
       case S_REVIEW:
-        oled1.drawStr(0, 14, "TARGET REPS");
-        oled1.setFont(u8g2_font_logisoso32_tn);
-        oled1.setCursor(0, 58);
-        oled1.print(exTarget[idx]);
+        if (exKind[idx] == 'm') {
+          oled1.drawStr(0, 14, "MOBILITY");
+          oled1.setFont(u8g2_font_6x10_tr);
+          oled1.drawStr(0, 36, "Do it, then B1.");
+          oled1.drawStr(0, 48, "Turn knob = skip");
+        } else {
+          oled1.drawStr(0, 14, exKind[idx] == 'c' ? "TARGET MINUTES" : "TARGET REPS");
+          oled1.setFont(u8g2_font_logisoso32_tn);
+          oled1.setCursor(0, 58);
+          oled1.print(target[idx]);
+        }
         break;
       case S_CONFIRM:
         oled1.drawStr(0, 14, "REVIEW DONE");
@@ -425,10 +576,20 @@ void drawOLED1() {
         oled1.drawStr(0, 36, "Check the main");
         oled1.drawStr(0, 48, "screen to confirm");
         break;
-      case S_DONE:
-        oled1.drawStr(0, 30, "SAVED");
+      case S_SAVING:
+        oled1.drawStr(0, 30, "SAVING...");
+        break;
+      case S_SAVE_FAILED:
+        oled1.drawStr(0, 14, "SAVE FAILED");
         oled1.setFont(u8g2_font_6x10_tr);
-        oled1.drawStr(0, 50, userName);
+        oled1.drawStr(0, 32, saveError);
+        oled1.drawStr(0, 48, "B1 retry  B2 drop");
+        break;
+      case S_DONE:
+        oled1.drawStr(0, 30, saveResult == SAVE_OK ? "SAVED" : "NOT SAVED");
+        oled1.setFont(u8g2_font_6x10_tr);
+        oled1.drawStr(0, 50, saveResult == SAVE_OK ? userName
+                             : saveResult == SAVE_GUEST ? "Guest session" : "Server was offline");
         break;
     }
   } while (oled1.nextPage());
@@ -452,26 +613,33 @@ void drawOLED2() {
         break;
       case S_EXERCISE:
       case S_REVIEW: {
-        oled2.drawStr(0, 14, "REPS DONE");
-        oled2.setFont(u8g2_font_logisoso32_tn);
-        oled2.setCursor(0, 52);
-        oled2.print(repsDone[idx]);
+        bool mob = exKind[idx] == 'm';
+        oled2.drawStr(0, 14, mob ? "STATUS" : exKind[idx] == 'c' ? "MINUTES DONE" : "REPS DONE");
+        if (mob) {
+          oled2.drawStr(0, 44, actual[idx] ? "DONE" : "SKIP");
+        } else {
+          oled2.setFont(u8g2_font_logisoso32_tn);
+          oled2.setCursor(0, 52);
+          oled2.print(actual[idx]);
+        }
         // progress bar
         oled2.drawFrame(66, 20, 60, 12);
-        int tgt = exTarget[idx] > 0 ? exTarget[idx] : 1;
-        int w = (int)((long)clampInt(repsDone[idx], 0, tgt) * 56 / tgt);
+        int tgt = target[idx] > 0 ? target[idx] : 1;
+        int w = (int)((long)clampInt(actual[idx], 0, tgt) * 56 / tgt);
         if (w > 0) oled2.drawBox(68, 22, w, 8);
         oled2.setFont(u8g2_font_6x10_tr);
         oled2.setCursor(66, 46);
-        oled2.print("Ex ");
+        oled2.print("Step ");
         oled2.print(idx + 1);
         oled2.print("/");
-        oled2.print(numEx);
+        oled2.print(numSteps);
         oled2.setCursor(66, 60);
-        oled2.print(repsDone[idx] >= exTarget[idx] ? "Goal met" : "Keep going");
+        oled2.print(mob ? "B1 = next" : actual[idx] >= target[idx] ? "Goal met" : "Keep going");
         break;
       }
       case S_CONFIRM:
+      case S_SAVING:
+      case S_SAVE_FAILED:
       case S_DONE:
         oled2.drawStr(0, 14, state == S_DONE ? "COMPLETE" : "SUMMARY");
         oled2.setFont(u8g2_font_6x10_tr);
@@ -479,7 +647,7 @@ void drawOLED2() {
         oled2.print("Goals met: ");
         oled2.print(targetsMet());
         oled2.print("/");
-        oled2.print(numEx);
+        oled2.print(numSteps);
         oled2.setCursor(0, 50);
         oled2.print("User: ");
         oled2.print(userName);
@@ -502,25 +670,19 @@ void printSummary() {
   Monitor.print("--- Workout summary: ");
   Monitor.print(userName);
   Monitor.println(" ---");
-  for (int i = 0; i < numEx; i++) {
+  for (int i = 0; i < numSteps; i++) {
     Monitor.print(exName[i]);
+    Monitor.print(" set ");
+    Monitor.print(setIdx[i]);
     Monitor.print(": ");
-    Monitor.print(repsDone[i]);
+    Monitor.print(actual[i]);
     Monitor.print("/");
-    Monitor.println(exTarget[i]);
+    Monitor.println(target[i]);
   }
   Monitor.print("Goals met: ");
   Monitor.print(targetsMet());
   Monitor.print("/");
-  Monitor.println(numEx);
-
-  // Send to the Linux side (python/main.py), which POSTs it to the server.
-  // One string: "UID;name;reps1,reps2,...;target1,target2,..."  (guests have an empty UID)
-  String msg = String(lastUid) + ";" + userName + ";";
-  for (int i = 0; i < numEx; i++) { if (i) msg += ","; msg += repsDone[i]; }
-  msg += ";";
-  for (int i = 0; i < numEx; i++) { if (i) msg += ","; msg += exTarget[i]; }
-  Bridge.notify("save_workout", msg);
+  Monitor.println(numSteps);
 }
 
 // ---------- Setup ----------
@@ -559,15 +721,13 @@ void setup() {
   initReader();
   delay(50);
 
-  for (int i = 0; i < DEFAULT_EX; i++) {
-    strncpy(exName[i], defaultName[i], 16); exName[i][16] = '\0';
-    exTarget[i] = defaultTarget[i]; repsDone[i] = 0;
-  }
+  loadDefaults(defaultTarget);   // fill the step arrays with something sensible
   bool bound = Bridge.provide_safe("load_plan", loadPlan);
-  if (!bound) {
-    Monitor.println("Could not register load_plan - server plans will not load.");
+  bool boundSave = Bridge.provide_safe("save_result", saveDone);
+  if (!bound || !boundSave) {
+    Monitor.println("Could not register load_plan/save_result - server link will not work.");
     lcd.clear();
-    lcd.print("load_plan failed");
+    lcd.print(bound ? "save_result fail" : "load_plan failed");
     delay(2000);
   }
 
@@ -591,7 +751,7 @@ void loop() {
       // load_plan() moves us on when the server answers; otherwise fall back after a timeout
       if (now - loadingSince > PLAN_WAIT_MS) {
         if (pendingUser >= 0) {
-          Monitor.println("Server did not answer - using offline user list.");
+          Monitor.println("Server did not answer - using offline user list (will not be saved).");
           startSession(USERS[pendingUser].name, USERS[pendingUser].target);
         } else {
           Monitor.println("Server did not answer and card not in offline list.");
@@ -606,20 +766,40 @@ void loop() {
       else if (p1 || p2 || now - unknownSince > UNKNOWN_SHOW_MS) { goToScan(); dirty = true; }
       break;
 
+    case S_SAVING:
+      // save_result() moves us on when the server answers; no answer at all counts as a failure
+      if (now - savingSince > SAVE_WAIT_MS) {
+        strncpy(saveError, "No answer", sizeof(saveError));
+        state = S_SAVE_FAILED;
+        Monitor.println("Save failed: no answer from the Linux side.");
+        dirty = true;
+      }
+      break;
+
+    case S_SAVE_FAILED:
+      if (p1) { sendSave(); dirty = true; }                // retry (the server ignores duplicates)
+      else if (p2) { Monitor.println("Workout discarded."); goToScan(); dirty = true; }
+      break;
+
     case S_DONE:
       if (checkCard()) dirty = true;                       // next person taps in
       else if (p1) { goToScan(); dirty = true; }
       break;
 
     case S_EXERCISE:
-      // Knob sets reps for the current exercise
       if (now - lastPotRead >= 20) {
         lastPotRead = now;
         int raw = readPot();
-        if (!potLive && abs(raw - potBase) > PICKUP_MARGIN) { potLive = true; dirty = true; }
-        if (potLive) {
-          int r = potToReps(raw, repsDone[idx]);
-          if (r != repsDone[idx]) { repsDone[idx] = r; dirty = true; }
+        if (exKind[idx] == 'm') {
+          // Mobility: done by default; a clear turn of the knob switches done <-> skipped
+          if (abs(raw - potBase) > TOGGLE_MARGIN) { actual[idx] = actual[idx] ? 0 : 1; potBase = raw; dirty = true; }
+        } else {
+          // Strength / cardio: the knob sets reps / minutes
+          if (!potLive && abs(raw - potBase) > PICKUP_MARGIN) { potLive = true; dirty = true; }
+          if (potLive) {
+            int r = potToValue(raw, actual[idx], maxForKind(exKind[idx]));
+            if (r != actual[idx]) { actual[idx] = r; dirty = true; }
+          }
         }
       }
       if (p1) { goNext(); dirty = true; }

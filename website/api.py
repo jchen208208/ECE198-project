@@ -81,6 +81,36 @@ def _sets_done_today(patient_id):
     return dict(db.session.execute(query).all())
 
 
+def _last_set_today(patient_id):
+    """{dosage_id: highest set number logged today} for one patient."""
+    query = (
+        db.select(ExerciseLog.dosage_id, db.func.max(ExerciseLog.set_number))
+        .where(ExerciseLog.patient_id == patient_id, ExerciseLog.logged_at >= _start_of_today())
+        .group_by(ExerciseLog.dosage_id)
+    )
+    return {dosage_id: last or 0 for dosage_id, last in db.session.execute(query).all()}
+
+
+def _save_set(patient, dosage, set_number, reps, load_lb, minutes):
+    """Log one set. If that set was already logged today (e.g. a retry), update it instead of adding
+    a duplicate. Returns True if an existing log was updated. The caller commits."""
+    log = db.session.execute(
+        db.select(ExerciseLog).where(
+            ExerciseLog.patient_id == patient.patient_id,
+            ExerciseLog.dosage_id == dosage.dosage_id,
+            ExerciseLog.set_number == set_number,
+            ExerciseLog.logged_at >= _start_of_today(),
+        )
+    ).scalars().first()
+    updated = log is not None
+    if log is None:
+        log = ExerciseLog(patient=patient, dosage=dosage, set_number=set_number)
+        db.session.add(log)
+    log.reps, log.load_lb, log.minutes = reps, load_lb, minutes
+    log.logged_at = datetime.now()
+    return log, updated
+
+
 def _read_number(data, key, whole):
     """Optional JSON number, 0 or more. Missing or null -> None. Raises ValueError otherwise."""
     value = data.get(key)
@@ -132,9 +162,13 @@ def plan():
     """The patient's whole active plan in order (used by the UNO Q station on a card tap).
 
     GET /api/plan?card=CARD001
-    200 {"first_name": "Pat", "exercises": [{"exercise": "Goblet squats", "type": "strength",
-         "sets": 2, "reps": 15, "load_lb": 10.0, "minutes": null}, ...]}
+    200 {"first_name": "Pat", "exercises": [{"dosage_id": 5, "exercise": "Goblet squats",
+         "type": "strength", "sets": 2, "reps": 15, "load_lb": 10.0, "minutes": null,
+         "next_set": 1}, ...]}
     404 {"error": "unknown_card", ...}
+
+    next_set is the set number to log first: 1, or higher if the patient already logged sets of
+    that exercise today. The station sends dosage_id and set numbers back to POST /api/workout.
     """
     if not request.args.get("card"):
         return _error(400, "missing_card", "Add ?card=<card ID> to the URL.")
@@ -142,11 +176,13 @@ def plan():
     if patient is None:
         return _error(404, "unknown_card", "This card isn't assigned to a patient.")
     dosages = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
+    last_set = _last_set_today(patient.patient_id)
     return jsonify(
         first_name=_first_name(patient),
         exercises=[
-            dict(exercise=d.exercise, type=d.exercise_type, sets=d.sets, reps=d.reps,
-                 load_lb=d.load_lb, minutes=d.minutes)
+            dict(dosage_id=d.dosage_id, exercise=d.exercise, type=d.exercise_type, sets=d.sets,
+                 reps=d.reps, load_lb=d.load_lb, minutes=d.minutes,
+                 next_set=last_set.get(d.dosage_id, 0) + 1)
             for d in dosages
         ],
     )
@@ -191,21 +227,7 @@ def log_set():
     elif set_number < 1:
         return _error(400, "bad_value", "set must be 1 or more.")
 
-    # Same set already logged today (e.g. a retry)? Update it instead of adding a duplicate.
-    log = db.session.execute(
-        db.select(ExerciseLog).where(
-            ExerciseLog.patient_id == patient.patient_id,
-            ExerciseLog.dosage_id == dosage.dosage_id,
-            ExerciseLog.set_number == set_number,
-            ExerciseLog.logged_at >= _start_of_today(),
-        )
-    ).scalars().first()
-    updated = log is not None
-    if log is None:
-        log = ExerciseLog(patient=patient, dosage=dosage, set_number=set_number)
-        db.session.add(log)
-    log.reps, log.load_lb, log.minutes = reps, load_lb, minutes
-    log.logged_at = datetime.now()
+    log, updated = _save_set(patient, dosage, set_number, reps, load_lb, minutes)
     db.session.commit()
 
     return jsonify(ok=True, log_id=log.log_id, set=set_number, updated=updated)
@@ -215,11 +237,16 @@ def log_set():
 def log_workout():
     """Whole workout in one call (used by the UNO Q station).
 
-    POST {"card": "A1 B2 C3 D4", "reps": [10, 12, 8, 6]}
-    The i-th number is matched to the i-th exercise of the patient's active plan (plan order).
-    Strength: logs the next set with those reps (load comes from the plan). Cardio/mobility:
-    logged as done if the number is above 0. Extra numbers beyond the plan are ignored.
-    200 {"ok": true, "logged": 3, "skipped": 1}
+    POST {"card": "DEADBEEF", "sets": [{"dosage_id": 5, "set": 1, "value": 15}, ...]}
+    One entry per set. dosage_id and set come from GET /api/plan (dosage_id, next_set onwards).
+    value: reps (strength; load comes from the plan), minutes (cardio), 1 = done (mobility).
+    value 0 = skipped: nothing is logged for that set.
+    Sending the same workout again (a retry after a dropped connection) updates those sets
+    instead of adding duplicates. An exercise removed from the plan after the card tap is still
+    logged, since the patient did it.
+    200 {"ok": true, "logged": 3, "updated": 0, "skipped": 1}     logged = new sets saved
+    400 {"error": "bad_request" / "bad_value" / "bad_dosage", ...}  nothing is saved
+    404 {"error": "unknown_card", ...}
     """
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -227,29 +254,44 @@ def log_workout():
     patient = _patient_for_card(data.get("card"))
     if patient is None:
         return _error(404, "unknown_card", "This card isn't assigned to a patient.")
-    reps_list = data.get("reps")
-    if not isinstance(reps_list, list) or not all(
-        isinstance(r, int) and not isinstance(r, bool) and r >= 0 for r in reps_list
-    ):
-        return _error(400, "bad_value", "reps must be a list of whole numbers, 0 or more.")
 
-    plan = sorted((d for d in patient.dosages if d.is_active), key=lambda d: (d.position, d.dosage_id))
-    done_today = _sets_done_today(patient.patient_id)
-    logged = skipped = 0
-    for dosage, reps in zip(plan, reps_list):
-        if reps == 0:
+    entries = data.get("sets")
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        return _error(400, "bad_value", "sets must be a list of {dosage_id, set, value} objects.")
+    rows = []
+    try:
+        for entry in entries:
+            dosage_id = _read_number(entry, "dosage_id", whole=True)
+            set_number = _read_number(entry, "set", whole=True)
+            value = _read_number(entry, "value", whole=True)
+            if dosage_id is None or set_number is None or value is None:
+                raise ValueError("Each set needs dosage_id, set and value.")
+            if set_number < 1:
+                raise ValueError("set must be 1 or more.")
+            rows.append((dosage_id, set_number, value))
+    except ValueError as error:
+        return _error(400, "bad_value", str(error))
+
+    dosages = {d.dosage_id: d for d in patient.dosages}
+    if any(dosage_id not in dosages for dosage_id, _, _ in rows):
+        return _error(400, "bad_dosage", "That exercise isn't in this patient's plan.")
+
+    logged = updated = skipped = 0
+    for dosage_id, set_number, value in rows:
+        if value == 0:
             skipped += 1
             continue
-        is_strength = dosage.exercise_type == "strength"
-        db.session.add(ExerciseLog(
-            patient=patient,
-            dosage=dosage,
-            set_number=done_today.get(dosage.dosage_id, 0) + 1,
-            reps=reps if is_strength else None,
-            load_lb=dosage.load_lb if is_strength else None,
-            minutes=dosage.minutes if dosage.exercise_type == "cardio" else None,
-            logged_at=datetime.now(),
-        ))
-        logged += 1
+        dosage = dosages[dosage_id]
+        if dosage.exercise_type == "strength":
+            reps, load_lb, minutes = value, dosage.load_lb, None
+        elif dosage.exercise_type == "cardio":
+            reps, load_lb, minutes = None, None, value
+        else:  # mobility: just "done"
+            reps = load_lb = minutes = None
+        _, was_update = _save_set(patient, dosage, set_number, reps, load_lb, minutes)
+        if was_update:
+            updated += 1
+        else:
+            logged += 1
     db.session.commit()
-    return jsonify(ok=True, logged=logged, skipped=skipped)
+    return jsonify(ok=True, logged=logged, updated=updated, skipped=skipped)

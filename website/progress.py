@@ -12,6 +12,7 @@ Flags follow CCCARE's rules from the "Dosages & Exercise Sessions" doc:
 """
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 
 REPS_TO_PROGRESS = 20
 SESSIONS_IN_A_ROW = 2
@@ -76,6 +77,80 @@ def patient_flags(patient):
                 f"In the plan for {sessions_in_plan} sessions. Time to swap in a new exercise.",
             ))
     return flags
+
+
+@dataclass
+class SessionDay:
+    day: date
+    scheduled: bool
+    done: int = 0         # prescribed sets (or cardio/mobility items) logged
+    prescribed: int = 0
+
+    @property
+    def attended(self):
+        return self.done > 0
+
+    @property
+    def percent(self):
+        """% of the plan logged, or None for a scheduled day with nothing logged."""
+        if not self.attended:
+            return None
+        return round(100 * self.done / self.prescribed) if self.prescribed else 100
+
+
+def _units(dosage):
+    """How many things the patient logs for this exercise: one per set, or 1 for cardio/mobility."""
+    return (dosage.sets or 1) if dosage.exercise_type == "strength" else 1
+
+
+def session_completion(patient, max_sessions=12, today=None):
+    """Attendance and plan completion for the last `max_sessions` days, oldest first.
+
+    Days shown = days anything was logged + scheduled days before today (today isn't "missed" yet).
+    The plan isn't versioned, so past days are compared against the current sets count.
+    An exercise counts on a day if it was active and already in the plan, or if it was logged
+    that day (so a removed exercise only counts on the days it was actually done).
+    """
+    today = today or date.today()
+    logged = _logs_by_day(patient.logs)
+    scheduled = {s.date for s in patient.sessions if s.date and s.is_scheduled}
+    past_scheduled = {d for d in scheduled if d < today}
+    days = sorted(set(logged) | past_scheduled)[-max_sessions:]
+
+    rows = []
+    for day in days:
+        row = SessionDay(day, scheduled=day in scheduled)
+        sets_by_dosage = defaultdict(set)
+        for log in logged.get(day, []):
+            sets_by_dosage[log.dosage_id].add(log.set_number)
+        for dosage in patient.dosages:
+            in_plan = dosage.is_active and (dosage.created_on is None or dosage.created_on <= day)
+            if not in_plan and dosage.dosage_id not in sets_by_dosage:
+                continue
+            units = _units(dosage)
+            row.prescribed += units
+            row.done += min(len(sets_by_dosage.get(dosage.dosage_id, ())), units)
+        rows.append(row)
+    return rows
+
+
+def session_status(patient, today=None):
+    """{date: "attended" | "missed" | "upcoming"} for every scheduled session."""
+    today = today or date.today()
+    logged = set(_logs_by_day(patient.logs))
+    status = {}
+    for s in patient.sessions:
+        if s.date is None:
+            continue
+        if s.date in logged:
+            status[s.date] = "attended"
+        elif s.date > today:
+            status[s.date] = "upcoming"
+        elif s.date == today:
+            status[s.date] = "today"
+        else:
+            status[s.date] = "missed"
+    return status
 
 
 def log_history(patient, max_sessions=10):
